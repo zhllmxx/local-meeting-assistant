@@ -15,7 +15,7 @@
 
 ## 支持范围
 
-当前验证环境为 **macOS 26+、Apple Silicon、Python 3.11、Node.js 20+**。需要 Xcode/Command Line Tools 提供 Swift 和 macOS SDK，以及 FFmpeg。ScreenCaptureKit 是默认系统音频路线；CoreAudio Tap 是备选。不需要 BlackHole，不修改系统默认扬声器，也不调用会议软件接口。
+当前验证环境为 **macOS 26+、Apple Silicon、Python 3.11、Node.js 20+**。需要 Xcode/Command Line Tools 提供 Swift 和 macOS SDK。扬声器单人模式由 ScreenCaptureKit 原生输出 ASR 所需的 PCM，不需要 FFmpeg；普通设备采集、麦克风混音和 CoreAudio Tap 兼容路线仍可使用 FFmpeg。系统音频路线不需要 BlackHole，不修改系统默认扬声器，也不调用会议软件接口。
 
 这是早期版本，尚未验证 Windows/Linux、Intel Mac 或更低版本 macOS。ScreenCaptureKit 采集期间的系统提示图标由 macOS 管理。
 
@@ -24,7 +24,7 @@
 在项目目录中安装运行依赖：
 
 ```sh
-brew install python@3.11 ffmpeg node
+brew install python@3.11 node
 python3.11 -m venv .venv-app
 .venv-app/bin/python -m pip install -r requirements.txt
 npm ci
@@ -54,7 +54,7 @@ mkdir -p secrets materials
 
 两路默认使用 `doubao-seed-2-1-pro-260915`，显式关闭 thinking。请先确认你的账户有该模型权限；可通过 `HUOSHAN_MODEL` 修改模型或推理接入点 ID。ASR 的 URL 和资源 ID 可通过 `DOUBAO_ASR_URL`、`DOUBAO_ASR_RESOURCE_ID` 配置。
 
-所有配置均可用同名环境变量覆盖。相对文件路径基于项目目录；资料目录/额外文件必须位于资料根目录下。数组型环境变量使用 JSON 数组。
+所有配置均可用同名环境变量覆盖。相对文件路径基于项目目录；资料目录/额外文件必须位于资料根目录下。数组型环境变量使用 JSON 数组。若使用普通设备、麦克风混音或 CoreAudio Tap 兼容路线，再安装 `ffmpeg`；扬声器单人模式不需要它。
 
 先以前台方式启动：
 

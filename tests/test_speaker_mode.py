@@ -53,6 +53,11 @@ class SpeakerModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.start_capture("screen", None, "unknown")
 
+    def test_native_screen_route_is_listed_without_ffmpeg(self):
+        with patch.object(app, "FFMPEG", str(self.runs / "missing-ffmpeg")):
+            devices = app.list_audio_devices()
+        self.assertIn(app.SCREEN_AUDIO_ID, {item["id"] for item in devices})
+
     def test_transcription_uses_only_doubao_with_partial_updates(self):
         callback = Mock()
         path = Path("speech.wav")

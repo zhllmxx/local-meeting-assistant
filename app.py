@@ -191,25 +191,29 @@ def local_services() -> dict[str, bool]:
 
 
 def list_audio_devices() -> list[dict[str, str]]:
-    result = subprocess.run(
-        [FFMPEG, "-hide_banner", "-list_devices", "true", "-f", "avfoundation", "-i", ""],
-        capture_output=True,
-        text=True,
-        timeout=8,
-    )
-    text = result.stderr + result.stdout
-    section = text.split("AVFoundation audio devices:", 1)
-    if len(section) < 2:
-        return []
-    section = section[1].split("AVFoundation video devices:", 1)[0]
-    # AVFoundation indices change when Continuity/iPhone devices reconnect.
-    # Keep the selection stable and open the device by the same name FFmpeg lists.
-    devices = [
-        {"id": f"avfoundation:{match.group(2).strip()}",
-         "name": match.group(2).strip(), "index": match.group(1)}
-        for line in section.splitlines()
-        if (match := re.search(r"\[(\d+)\]\s+(.+?)\s*$", line))
-    ]
+    devices: list[dict[str, str]] = []
+    if Path(FFMPEG).is_file():
+        try:
+            result = subprocess.run(
+                [FFMPEG, "-hide_banner", "-list_devices", "true", "-f", "avfoundation", "-i", ""],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            text = result.stderr + result.stdout
+            section = text.split("AVFoundation audio devices:", 1)
+            if len(section) >= 2:
+                section = section[1].split("AVFoundation video devices:", 1)[0]
+                # AVFoundation indices change when Continuity/iPhone devices reconnect.
+                # Keep the selection stable and open the device by the same name FFmpeg lists.
+                devices = [
+                    {"id": f"avfoundation:{match.group(2).strip()}",
+                     "name": match.group(2).strip(), "index": match.group(1)}
+                    for line in section.splitlines()
+                    if (match := re.search(r"\[(\d+)\]\s+(.+?)\s*$", line))
+                ]
+        except (OSError, subprocess.SubprocessError):
+            pass
     # This is a logical route. The actual CoreAudio tap is created only when
     # capture starts, so refreshing the page never changes the audio graph.
     if PROCESS_TAP_MODE == "global":
@@ -239,7 +243,7 @@ def ensure_screen_audio_capture() -> None:
     try:
         compile_result = subprocess.run(
             [SWIFTC, "-parse-as-library", *swift_build_flags(),
-             "-framework", "ScreenCaptureKit", "-framework", "CoreMedia",
+             "-framework", "AVFoundation", "-framework", "ScreenCaptureKit", "-framework", "CoreMedia",
              str(SCREEN_AUDIO_SOURCE), "-o", str(SCREEN_AUDIO_BINARY)],
             capture_output=True, text=True, timeout=30,
         )
@@ -946,17 +950,18 @@ def start_capture(system_id: str, mic_id: str | None, mode: str = "general") -> 
                 raise ValueError("请先停止采集，再切换模式。")
             return {"ok": True, "status": "recording", "session_id": STATE["session_id"], "capture_mode": mode}
 
-    if not Path(FFMPEG).is_file():
-        raise RuntimeError(f"找不到 ffmpeg：{FFMPEG}")
     if not doubao_asr.key_available():
         raise RuntimeError("豆包 ASR 密钥不可用，请检查配置文件。")
 
     cleanup_orphan_capture_processes()
+    screen_route = system_id == SCREEN_AUDIO_ID
     process_tap_id = None
-    tap_device_id = next(
-        (item["id"] for item in list_audio_devices() if item["name"] == PROCESS_TAP_NAME),
-        None,
-    )
+    tap_device_id = None
+    if not screen_route:
+        tap_device_id = next(
+            (item["id"] for item in list_audio_devices() if item["name"] == PROCESS_TAP_NAME),
+            None,
+        )
     tap_requested = system_id == SYSTEM_TAP_ID or system_id == tap_device_id
     if tap_requested:
         try:
@@ -966,9 +971,14 @@ def start_capture(system_id: str, mic_id: str | None, mode: str = "general") -> 
         if not process_tap_id:
             stop_process_tap()
             raise RuntimeError("系统输出旁路创建失败，请查看 capture-debug.log。")
-    screen_route = system_id == SCREEN_AUDIO_ID
     if screen_route:
         ensure_screen_audio_capture()
+    # ScreenCaptureKit already provides the system mix. The Swift helper emits
+    # the ASR-ready 16 kHz s16le stream, so no FFmpeg process is needed when
+    # there is no second input to mix.
+    native_screen_route = screen_route and mic_id is None
+    if not native_screen_route and not Path(FFMPEG).is_file():
+        raise RuntimeError(f"找不到 ffmpeg：{FFMPEG}")
 
     session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     folder = RUNS / session_id
@@ -979,42 +989,68 @@ def start_capture(system_id: str, mic_id: str | None, mode: str = "general") -> 
     }, ensure_ascii=False), encoding="utf-8")
     screen_process: subprocess.Popen[bytes] | None = None
     screen_log = None
+    process: subprocess.Popen[bytes] | None = None
+    command: list[str]
+    detail_path: Path
+    source_audio: Path | None = None
     try:
-        command = [FFMPEG, "-hide_banner", "-nostats", "-loglevel", "info"]
-        if screen_route:
-            screen_log = (folder / "screen-audio.log").open("ab")
+        if native_screen_route:
+            detail_path = folder / "screen-audio.log"
+            screen_log = detail_path.open("ab")
             screen_process = subprocess.Popen(
                 [str(SCREEN_AUDIO_BINARY)], stdout=subprocess.PIPE, stderr=screen_log,
             )
-            command.extend(["-f", "f32le", "-ar", "48000", "-ac", "1", "-i", "pipe:0"])
+            process = screen_process
+            command = [str(SCREEN_AUDIO_BINARY), "(native 16 kHz s16le)"]
         else:
-            capture_id = process_tap_id if tap_requested else system_id
-            command.extend(["-thread_queue_size", "512", "-f", "avfoundation", "-i",
-                            avfoundation_input(capture_id)])
-        if mic_id is not None:
-            command.extend(
-                [
-                    "-thread_queue_size", "512", "-f", "avfoundation", "-i", avfoundation_input(mic_id),
-                    "-filter_complex",
-                    "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[mix]",
-                    "-map", "[mix]",
-                ]
-            )
-        else:
-            command.extend(["-map", "0:a:0"])
-        audio_filter = "aresample=async=1:first_pts=0,asetnsamples=n=320:p=0"
-        command.extend([
-            "-af", audio_filter,
-            "-ac", "1", "-ar", str(PCM_RATE), "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
-        ])
-        # A separate output preserves the input's native sample rate/channels
-        # before the ASR filter/resampler, so both stages can be compared later.
-        source_audio = folder / "source-native.wav" if RETAIN_UTTERANCE_AUDIO else None
-        if source_audio is not None:
-            command.extend(["-map", "0:a:0", "-c:a", "pcm_f32le", "-f", "wav", str(source_audio)])
+            command = [FFMPEG, "-hide_banner", "-nostats", "-loglevel", "info"]
+            if screen_route:
+                screen_log = (folder / "screen-audio.log").open("ab")
+                screen_process = subprocess.Popen(
+                    [str(SCREEN_AUDIO_BINARY)], stdout=subprocess.PIPE, stderr=screen_log,
+                )
+                command.extend(["-f", "f32le", "-ar", "48000", "-ac", "1", "-i", "pipe:0"])
+            else:
+                capture_id = process_tap_id if tap_requested else system_id
+                command.extend(["-thread_queue_size", "512", "-f", "avfoundation", "-i",
+                                avfoundation_input(capture_id)])
             if mic_id is not None:
-                command.extend(["-map", "1:a:0", "-c:a", "pcm_f32le", "-f", "wav",
-                                str(folder / "microphone-native.wav")])
+                command.extend(
+                    [
+                        "-thread_queue_size", "512", "-f", "avfoundation", "-i", avfoundation_input(mic_id),
+                        "-filter_complex",
+                        "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[mix]",
+                        "-map", "[mix]",
+                    ]
+                )
+            else:
+                command.extend(["-map", "0:a:0"])
+            audio_filter = "aresample=async=1:first_pts=0,asetnsamples=n=320:p=0"
+            command.extend([
+                "-af", audio_filter,
+                "-ac", "1", "-ar", str(PCM_RATE), "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1",
+            ])
+            # Preserve the native source on the compatibility path for audio
+            # diagnostics. The native ScreenCaptureKit path already emits the
+            # ASR-ready stream and retains per-utterance WAV files in Python.
+            source_audio = folder / "source-native.wav" if RETAIN_UTTERANCE_AUDIO else None
+            if source_audio is not None:
+                command.extend(["-map", "0:a:0", "-c:a", "pcm_f32le", "-f", "wav", str(source_audio)])
+                if mic_id is not None:
+                    command.extend([
+                        "-map", "1:a:0", "-c:a", "pcm_f32le", "-f", "wav",
+                        str(folder / "microphone-native.wav"),
+                    ])
+            detail_path = folder / "ffmpeg.log"
+            log = detail_path.open("ab")
+            process = subprocess.Popen(
+                command,
+                stdin=screen_process.stdout if screen_process else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=log,
+                bufsize=0,
+            )
+            log.close()
         try:
             devices = list_audio_devices()
         except Exception as exc:
@@ -1040,37 +1076,31 @@ def start_capture(system_id: str, mic_id: str | None, mode: str = "general") -> 
             command=command,
             screen_capture_pid=screen_process.pid if screen_process else None,
         )
-        log = (folder / "ffmpeg.log").open("ab")
         capture_started_at = time.monotonic()
-        process = subprocess.Popen(
-            command,
-            stdin=screen_process.stdout if screen_process else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=log,
-            bufsize=0,
-        )
-        log.close()
-        if screen_process and screen_process.stdout:
+        if process is None:
+            raise RuntimeError("音频采集进程未启动")
+        if screen_process and screen_process.stdout and not native_screen_route:
             screen_process.stdout.close()
         if screen_log is not None:
             screen_log.close()
         time.sleep(0.8)
         if screen_process is not None and screen_process.poll() is not None:
-            details = (folder / "screen-audio.log").read_text(errors="replace")[-1200:]
+            details = detail_path.read_text(errors="replace")[-1200:]
             raise RuntimeError(f"系统音频采集启动失败：{details or 'ScreenCaptureKit exited'}")
         if process.poll() is not None:
-            details = (folder / "ffmpeg.log").read_text(errors="replace")[-1200:]
-            raise RuntimeError(f"音频采集启动失败：{details or 'ffmpeg exited'}")
+            details = detail_path.read_text(errors="replace")[-1200:]
+            label = "ScreenCaptureKit" if native_screen_route else "ffmpeg"
+            raise RuntimeError(f"音频采集启动失败：{details or label + ' exited'}")
         debug_log(
             "capture_input_opened",
             session_id=session_id,
             input_device=selected_name,
             native_audio=str(source_audio) if source_audio else None,
             input_gain_db=AUDIO_INPUT_GAIN_DB,
-            ffmpeg_details=(folder / "ffmpeg.log").read_text(errors="replace")[:4000],
+            capture_details=detail_path.read_text(errors="replace")[:4000],
         )
     except Exception:
-        if "process" in locals() and process.poll() is None:
+        if process is not None and process.poll() is None:
             process.terminate()
         if tap_requested:
             stop_process_tap()

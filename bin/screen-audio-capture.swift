@@ -1,5 +1,6 @@
 import CoreMedia
 import CoreAudio
+import AVFoundation
 import Foundation
 import ScreenCaptureKit
 
@@ -10,6 +11,9 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     private let lock = NSLock()
     private var callbacks = 0
     private var formatLogged = false
+    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
+    private var outputFormat: AVAudioFormat?
 
     private func fail(_ message: String) -> Never {
         fputs("screen audio capture failed: \(message)\n", stderr)
@@ -49,8 +53,8 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
             blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0, blockBufferOut: &retainedBlock)
         guard status == noErr else { fail("audio buffer list error=\(status)") }
         // Read each buffer by frame: stereo can arrive as separate channel
-        // planes or interleaved samples. Emit one Float32 per frame at 48 kHz;
-        // ffmpeg performs the filtered resampling to the ASR's 16 kHz PCM.
+        // planes or interleaved samples. Downmix and convert here so the
+        // helper emits the exact 16 kHz signed PCM expected by the ASR.
         let buffers = UnsafeMutableAudioBufferListPointer(list)
         let channels = buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
         guard channels > 0, channels == Int(asbd.mChannelsPerFrame) else { fail("invalid channel layout") }
@@ -70,11 +74,11 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
             }
         }
-        let output = mono.withUnsafeBytes { Data($0) }
+        let output = convertToTarget(mono, frames: frames, sampleRate: asbd.mSampleRate)
         lock.lock()
         if !formatLogged {
             formatLogged = true
-            fputs("format rate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) flags=\(asbd.mFormatFlags) bytes=\(asbd.mBytesPerFrame)\n", stderr)
+            fputs("format input_rate=\(asbd.mSampleRate) input_channels=\(asbd.mChannelsPerFrame) output_rate=16000 output_channels=1 output_format=s16le flags=\(asbd.mFormatFlags) bytes=\(asbd.mBytesPerFrame)\n", stderr)
         }
         callbacks += 1
         if callbacks == 1 || callbacks % 20 == 0 {
@@ -83,6 +87,62 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         lock.unlock()
         FileHandle.standardOutput.write(output)
+    }
+
+    private func convertToTarget(_ samples: [Float32], frames: Int, sampleRate: Double) -> Data {
+        if converter == nil {
+            guard let source = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: 1,
+                interleaved: false
+            ), let target = AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            ), let created = AVAudioConverter(from: source, to: target) else {
+                fail("cannot create audio converter")
+            }
+            inputFormat = source
+            outputFormat = target
+            converter = created
+        }
+        guard let converter, let inputFormat, let outputFormat,
+              let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frames)) else {
+            fail("cannot create converter input buffer")
+        }
+        input.frameLength = AVAudioFrameCount(frames)
+        guard let inputChannel = input.floatChannelData?.pointee else {
+            fail("missing converter input channel")
+        }
+        samples.withUnsafeBufferPointer { source in
+            guard let baseAddress = source.baseAddress else { return }
+            inputChannel.update(from: baseAddress, count: frames)
+        }
+
+        let outputCapacity = AVAudioFrameCount(ceil(Double(frames) * 16_000.0 / 48_000.0) + 32)
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
+            fail("cannot create converter output buffer")
+        }
+        var conversionError: NSError?
+        var supplied = false
+        _ = converter.convert(to: output, error: &conversionError) { _, status in
+            if supplied {
+                status.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            status.pointee = .haveData
+            return input
+        }
+        if let conversionError {
+            fail("audio conversion failed: \(conversionError)")
+        }
+        guard let outputChannel = output.int16ChannelData?.pointee else {
+            fail("missing converter output channel")
+        }
+        return Data(bytes: outputChannel, count: Int(output.frameLength) * MemoryLayout<Int16>.size)
     }
 }
 
