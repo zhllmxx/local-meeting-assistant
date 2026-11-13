@@ -1,0 +1,17 @@
+{
+  "name": "local-meeting-assistant-web",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build:web": "esbuild web/app.jsx --bundle --minify --outfile=web/app.bundle.js"
+  },
+  "dependencies": {
+    "@ant-design/icons": "5.6.1",
+    "antd": "5.29.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

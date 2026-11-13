@@ -1,0 +1,12 @@
+{
+  "MEETING_CONTEXT_ROOT": "materials",
+  "MEETING_SOURCE_DIRS": ["docs", "projects"],
+  "MEETING_EXTRA_FILES": [],
+  "MEETING_KNOWLEDGE_SOURCES": [],
+  "HUOSHAN_CONFIG": "secrets/huoshan.json",
+  "HUOSHAN_MODEL": "doubao-seed-2-1-pro-260915",
+  "DOUBAO_ASR_KEY_FILE": "secrets/doubao_asr.key",
+  "DOUBAO_ASR_RESOURCE_ID": "volc.seedasr.sauc.duration",
+  "PROCESS_TAP_MODE": "global",
+  "RETAIN_UTTERANCE_AUDIO": "1"
+}

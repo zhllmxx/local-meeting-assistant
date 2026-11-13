@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>会议助理工作台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/app.bundle.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">M</span><span>会议助理</span><span class="local-tag">豆包问答</span></div>
+      <div class="service-status" aria-label="服务状态">
+        <span class="status-item"><i id="llm-dot" class="dot"></i>豆包 LLM</span>
+        <span class="status-item"><i id="asr-dot" class="dot"></i>豆包 ASR</span>
+        <span class="status-item"><i id="audio-dot" class="dot"></i>音频</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <div id="capture-mode-root"></div>
+
+
+      <section class="content-grid">
+        <section class="transcript-panel" aria-labelledby="transcript-heading">
+          <div class="panel-heading">
+            <div><h1 id="transcript-heading">实时转写素材</h1><span id="transcript-count" class="muted">0 段</span></div>
+            <div class="transcript-actions">
+              <span id="transcript-insert-controls"><span class="transcript-add-label">点击添加到</span><span id="insert-target-root"></span></span>
+              <button id="copy-transcript" class="text-button" type="button">复制文本</button>
+            </div>
+          </div>
+          <section class="capture-bar" aria-label="会议采集控制">
+            <div class="capture-main">
+              <span id="capture-indicator" class="capture-indicator"></span>
+              <div>
+                <div id="capture-title" class="capture-title">未开始采集</div>
+                <div id="capture-subtitle" class="capture-subtitle">选择采集设备后手动开始</div>
+              </div>
+            </div>
+            <div class="capture-controls">
+              <label class="device-field"><span>采集设备</span><select id="system-device"></select></label>
+              <button id="refresh-devices" class="icon-button" type="button" title="刷新音频设备" aria-label="刷新音频设备">↻</button>
+              <button id="start-button" class="primary-button" type="button">开始采集</button>
+              <button id="stop-button" class="stop-button hidden" type="button">停止</button>
+            </div>
+          </section>
+          <div id="telemetry-root" aria-live="polite"></div>
+          <div id="error-banner" class="error-banner hidden" role="alert"></div>
+          <div id="transcript-helper" class="panel-helper">先选 Query 或 Answer，再点击任意转写片段即可加入。</div>
+          <div id="transcript-list" class="transcript-list" aria-live="polite"></div>
+        </section>
+
+        <aside class="assistant-panel" aria-labelledby="assistant-heading">
+          <div class="panel-heading">
+            <div><h2 id="assistant-heading">问答编排</h2><span id="assistant-subtitle" class="muted">人工组合后发送给火山 Ark</span></div>
+          </div>
+          <div id="editor-root"></div>
+        </aside>
+      </section>
+    </main>
+    <script src="/app.bundle.js"></script>
+  </body>
+</html>
